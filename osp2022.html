@@ -1,0 +1,512 @@
+<!doctype html>
+<html>
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+	<title>reveal.js</title>
+
+	<link rel="stylesheet" href="dist/reset.css">
+	<link rel="stylesheet" href="dist/reveal.css">
+	<link rel="stylesheet" href="dist/theme/beige.css">
+
+	<!-- Theme used for syntax highlighted code -->
+	<link rel="stylesheet" href="plugin/highlight/github-dark.css">
+</head>
+
+<body>
+	<div class="reveal">
+		<div class="slides">
+			<section>
+				<h4 class="r-fit-text">Libcosim APIs</h4>
+				<h6 class="r-fit-text">Usage & Examples</h6>
+			</section>
+			<section>
+				<h3>Roger.Eivind.Stenbro@dnv.com</h4>
+				<h4>M.Sc. Cybernetics</h4>
+				<h4>Marine Cybernetics since 2011</h4>
+				<h4>DNV since 2014</h4>
+				<h6>Working on all things simulation</h6>
+				<h6>HIL Testing, CyberSea, DP/DynCap, STC</h6>
+				<h6>developer on libcosim</h6>
+			</section>
+			<section>
+				<section>
+					<aside class="notes">
+						<p>Some notes</p>
+					</aside>
+					<aside class="notes">
+						<p>and some more notes</p>
+					</aside>
+					<img src="img/libcosim2.png" height="700">
+				</section>
+				<section>
+					<img src="img/libcosim3.png" height="700">
+				</section>
+			</section>
+			<section>
+				<section data-markdown>
+					<aside class="notes">
+						<p>
+							The execution controls the co-simulation run and as such contains lists of all managable
+							entities in a simulation.
+							From the algorithm (fixed step algorithm by default), observers, manipulators, functions to
+							add/remove/set/get.
+							entities. Connections can be signal/function to signal.
+
+							Can do what execution does just with the algorithm. Execution maintains a simulation, the
+							algorithm controls the simulators.
+
+							The algorithm is responsible for calling and managing the step() on each individual
+							simulator. It returns the step size and a set of simulator indexes that finished their
+							individual time step.
+
+							Observers and manipulator can be added to the execution both pre- and during simulation, with 
+							the appropriate lifecycle methods being called when e.g. a simulator is added or removed.
+						</p>
+					</aside>
+					<textarea data-template>
+						# Execution
+						---
+						* Simple interface to "run" a simulation
+						* Internally manages (lifecycle)
+							- Algorithm
+							- Observers
+							- Manipulators
+							- Connections 
+						* Steps with the provided algorithm
+					</textarea>
+				</section>
+				<section>
+					<h1>Warning: code ahead!</h1>
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="2|7-9|10-13|14|17-22">
+duration step()
+{
+	if (!initialized_) {
+		algorithm_->initialize();
+		initialized_ = true;
+		for (const auto& obs : observers_) {
+			obs->simulation_initialized(lastStep_, currentTime_);
+		}
+	}
+	for (const auto& man : manipulators_) {
+		man->step_commencing(currentTime_);
+	}
+	const auto [stepSize, finished] = algorithm_->do_step(currentTime_);
+	currentTime_ += stepSize;
+	++lastStep_;
+	for (const auto& obs : observers_) {
+		for (const auto& index : finished) {
+			obs->simulator_step_complete(index, lastStep_, stepSize, currentTime_);
+		}
+		obs->step_complete(lastStep_, stepSize, currentTime_);
+	}
+	return stepSize;
+}
+						</code>
+					</pre>
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="2|7-10|16">
+							<script type="text/template">
+bool simulate_until(std::optional<time_point> endTime)
+	{
+		stopped_ = false;
+		timer_.start(currentTime_);
+		duration stepSize;
+		do {
+			stepSize = step();
+			timer_.sleep(currentTime_);
+		} while (!stopped_ && !timed_out(endTime, currentTime_, stepSize));
+		bool isStopped = stopped_;
+		stopped_ = true;
+		return !isStopped;
+	}
+	
+std::future<bool> simulate_until_async(std::optional<time_point> endTime)
+{
+	...
+}
+							</script>
+						</code>
+					</pre>
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="2|5-10">
+							<script type="text/template">
+void add_observer(std::shared_ptr<observer> obs)
+	{
+		observers_.push_back(obs);
+		for (std::size_t i = 0; i < simulators_.size(); ++i) {
+			obs->simulator_added(static_cast<simulator_index>(i), simulators_[i].get(), currentTime_);
+		}
+		if (initialized_) {
+			obs->simulation_initialized(lastStep_, currentTime_);
+		}
+	}
+</script>
+</code>
+</pre>
+				</section>
+			</section>
+			<section>
+				<section data-markdown>
+					<aside class="notes">
+						<p>
+							The observers represent a read only view of the simulation. The execution manages the
+							observers (start by calling add_observer on the
+							the execution). Then the simulator objects can be referenced via the simulator_added
+							function's observable* parameter, which is called
+							when a simulator "joins" the simulation.
+
+							An observable is an interface for any obervable entity in the simulation. This would, in
+							many cases, be the simulator objects themselves.
+							The observable implements the get_TYPE() methods to get signal data for various data types.
+
+							Expose for getting: select which variables are transferred from remote simulators at each
+							step
+
+							Expose for setting: select which variables are transferred to remote simulators at each
+							step.
+
+							The purpose of the observers is really to act as a container for any observables you want to
+							query for simulation values. The get_TYPE()
+							methods are on the observables, so one direct approach is to create "mirror" implementations
+							of these in the observers.
+						</p>
+					</aside>
+					<textarea data-template>
+						# Observers
+						---
+						* Interface intended for read only "view"
+						* Handled by the execution
+							- Last value observer
+							- Time series observer
+							- File observer
+					</textarea>
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="2|5|9-13|17">
+							<script type="text/template">
+class observer
+{
+public:
+virtual void simulator_added(simulator_index, observable*, time_point) = 0;
+
+virtual void simulator_removed(simulator_index, time_point) = 0;
+
+virtual void simulation_initialized(step_number firstStep, time_point startTime) = 0;
+
+virtual void step_complete(step_number lastStep, duration lastStepSize, time_point currentTime) = 0;
+
+virtual void simulator_step_complete(simulator_index index, step_number lastStep, duration lastStepSize, time_point currentTime) = 0;
+}
+
+...
+execution->add_observer(my_observer*);
+...
+							</script>
+						</code>
+					</pre>
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="2|5">
+							<script type="text/template">
+class last_value_provider : public observer
+{
+public:
+	virtual void get_real(simulator_index sim, gsl::span<const value_reference> variables, gsl::span<double> values) = 0;
+
+	virtual void get_integer(simulator_index sim, gsl::span<const value_reference> variables, gsl::span<int> values) = 0;
+
+	virtual void get_boolean(simulator_index sim, gsl::span<const value_reference> variables, gsl::span<bool> values) = 0;
+
+	virtual void get_string(simulator_index sim, gsl::span<const value_reference> variables, gsl::span<std::string> values) = 0;
+};
+							</script>
+						</code>
+					</pre>
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="2-5|7-12|14-17|19-22">
+							<script type="text/template">
+void last_value_observer::simulator_added(simulator_index index, observable* simulator, time_point currentTime)
+{
+	valueProviders_[index] = std::make_unique<slave_value_provider>(simulator);
+}
+
+void last_value_observer::simulation_initialized(step_number firstStep, time_point startTime)
+{
+    for (const auto& entry : valueProviders_) {
+        entry.second->observe();
+    }
+}
+
+void last_value_observer::simulator_step_complete(simulator_index index, ...)
+{
+    valueProviders_.at(index)->observe();
+}
+
+void last_value_observer::get_real(simulator_index sim, gsl::span<const value_reference> variables, gsl::span<double> values)
+{
+	valueProviders_.at(sim)->get_real(variables, values);
+}
+							</script>
+						</code>
+					</pre>
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="5-7|14-16|24|27-28">
+							<script type="text/template">
+slave_value_provider::slave_value_provider(observable* observable)
+: observable_(observable)
+{
+	for (const auto& vd : observable->model_description().variables) {
+		observable->expose_for_getting(vd.type, vd.reference);
+	}
+	...
+}
+
+void slave_value_provider::observe()
+{
+	std::lock_guard<std::mutex> lock(lock_);
+
+	for (auto& [idx, value] : realSamples_) {
+		value = observable_->get_real(idx);
+	}
+	...
+}
+
+void slave_value_provider::get_real(gsl::span<const value_reference> variables, gsl::span<double> values)
+{
+	std::lock_guard<std::mutex> lock(lock_);
+	get<double>(variables, realSamples_, values);
+}
+
+private:
+    std::unordered_map<value_reference, double> realSamples_;
+							</script>
+						</code>
+					</pre>
+				</section>
+			</section>
+			<section>
+				<section data-markdown>
+					<aside class="notes">
+						<p>
+							Manipulators are exactly like observers in many ways, but they are about writing variables.
+							The interface is very similar to
+							observers, except that the simulator_added method receives a manipulable - but manipulable
+							is just derived from observable.
+							Instead of the step_completed there's step_commencing, since the manipulators will want to
+							write any values so they're "ready"
+							at the first possible timestep.
+
+							The modifiers themselves are std::function<TYPE(TYPE value, time_point)> which means each
+								function has access to the current value
+								of that value reference plus the current simulation time, which allows for a lot of
+								possible modifiers.
+						</p>
+					</aside>
+					<textarea data-template>
+						# Manipulators
+						---
+						* Interface intended for signal value manipulation
+						* Handled by the execution
+							- Value override
+							- Scenarios
+						* Manipulation done by way of an overriding function
+					</textarea>
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="2|5-7|9|12|15-19">
+							<script type="text/template">
+class manipulator
+{
+public:
+	virtual void simulator_added(simulator_index, manipulable*, time_point) = 0;
+
+	virtual void simulator_removed(simulator_index, time_point) = 0;
+
+	virtual void step_commencing(time_point currentTime) = 0;
+};
+
+class manipulable : public observable
+{
+public:
+	virtual void expose_for_setting(variable_type, value_reference) = 0;
+
+	virtual void set_real_input_modifier(value_reference reference, std::function<double(double, duration)> modifier) = 0;
+
+	virtual void set_real_output_modifier(value_reference reference, std::function<double(double, duration)> modifier) = 0;
+};
+							</script>
+						</code>
+					</pre>
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="2|5-12">
+							<script type="text/template">
+void override_manipulator::step_commencing(time_point currentTime)
+{
+	...
+	if (a.is_input) {
+		simulator->expose_for_setting(variable_type::real, a.variable);
+		simulator->set_real_input_modifier(a.variable, m.f);
+	} else {
+		simulator->expose_for_getting(variable_type::real, a.variable);
+		simulator->set_real_output_modifier(a.variable, m.f);
+	}
+	...
+}
+							</script>
+							</code>
+							</pre>
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="2|5-13">
+							<script type="text/template">
+namespace scenario
+{
+
+struct real_modifier
+{
+	std::function<double(double, duration)> f;
+};
+
+struct integer_modifier
+{
+	std::function<int(int, duration)> f;
+};
+
+...
+}
+							</script>
+							</code>
+							</pre>	
+				</section>
+				<section data-markdown>
+					<textarea data-template>
+						Modifier functions take current value, some input value, and current simulation time
+						<p></p>
+						Modifier functions will then return a new value to be set for the underlying variable
+					</textarea>
+				</section>
+			</section>
+			<section>
+				<section data-markdown>
+					<textarea data-template>
+					# Scenarios
+					---
+					* Set of simulation scenarios to be performed
+					* Based on a scenario file, json or yaml
+					* Structured around the concept of "actions"
+						- Sending signal at a certain time
+						- Simulating a sudden signal freeze
+					</textarea>
+				</section>
+				<section>
+					<h6>scenario.yaml</h6>
+					<img src="img/scenario.png" height="700">
+				</section>
+				<section>
+					<pre class="stretch">
+						<code data-line-numbers="2-3|5|7-9|13-15">
+							<script type="text/template">
+template<typename T>
+std::function<T(T, duration)> generate_modifier(...) {
+...
+T value = event["value"].get();
+
+if ("bias" == kind) {
+	return [value](T original, duration) { return original + value; };
+} 
+
+...
+
+if ("override" == kind) {
+	return [value](T original, duration) { return value; };
+}
+
+...
+}
+							</script>
+							</code>
+							</pre>						
+				</section>
+				<section>
+					<p>>=</p>
+					<p>override</p>
+					<p>bias</p>
+					<p>ramp</p>
+					<p>noise</p>
+				</section>
+			</section>
+			<section>
+				<section>
+					<h1>Resources</h1>
+					<aside class="notes">
+						libcosimc provides a C interface to libcosim. The cosim demo app uses this (through a server implemented in Go). 
+						C interface mainly contains structs representing "close copies" of the underlying libcosim classes, and exposes 
+						all the same functionality you need to observe and control a simulation.  
+					</aside>
+				</section>
+				<section>
+					<h6>github.com/open-simulation-platform</h6>
+					<img src="img/github.png" height="700">
+				</section>
+				<section>
+					<h6>open-simulation-platform.github.io</h6>
+					<img src="img/osp.png" height="700">
+				</section>
+				<section>
+					<h2>Tests</h2>
+					<h2>Doxygen</h2>
+					<h2>libcosimc</h2>
+					<h2>cosim4j</h2>
+				</section>
+				<section>
+					<h2>osp.jfrog.io</h2>
+					<h2>libcosim/0.9.0@osp/stable</h2>
+					<h1>cosim::</h1>
+				</section>
+			</section>
+			<section>
+				<h6 class="r-fit-text">?</h6>
+				<h4>Come talk to us at the workshop!</h4>
+			</section>
+		</div>
+	</div>
+
+	<script src="dist/reveal.js"></script>
+	<script src="plugin/notes/notes.js"></script>
+	<script src="plugin/markdown/markdown.js"></script>
+	<script src="plugin/highlight/highlight.js"></script>
+	<script>
+		// More info about initialization & config:
+		// - https://revealjs.com/initialization/
+		// - https://revealjs.com/config/
+		Reveal.initialize({
+			hash: true,
+			width: "100%",
+
+			// Learn about plugins: https://revealjs.com/plugins/
+			plugins: [RevealMarkdown, RevealHighlight, RevealNotes]
+		});
+	</script>
+</body>
+
+</html>
